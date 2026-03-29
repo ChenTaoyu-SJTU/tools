@@ -1,5 +1,7 @@
 # Codex 更新速记
 
+依赖 `tools/remote_workflow/utils.md` 中约定的 Host、container 和 `Downloads` 中转规则。
+
 ## 目标
 - 机器：`910c_1`、`910c_2`、`910c_3`、`910c_4`
 - 容器：不要写死容器名，按当前运行中的目标容器动态发现
@@ -19,13 +21,15 @@
 ```bash
 ssh 910c_X "docker ps --format '{{.Names}}'"
 ```
-- 如果只想处理你的业务容器，优先用名称过滤，例如：
+- 如果只想处理业务容器，优先用名称过滤，例如：
 ```bash
 ssh 910c_X "docker ps --format '{{.Names}}' | grep '^cty_'"
 ```
-- 如果后续你的命名规则变了，只需要替换过滤条件，不要改主流程
+- 如果后续命名规则变了，只需要替换过滤条件，不要改主流程
 
 ## 最快流程
+默认处理名称匹配 `^cty_` 的运行中容器。
+
 1. 上传权限文件到 4 台机器：
 ```bash
 scp /Users/bytedance/.codex/auth.json 910c_1:/data01/cty/Downloads/auth.json

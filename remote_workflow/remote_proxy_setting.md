@@ -1,21 +1,24 @@
-# 目标
-你为什需要这篇文档？
-答：由于远程服务器没有访问外网的权限，但是我们的`ai agent`例如`codex`, `claude code`等等，需要访问外网才能正常工作，所以本文档目标是能让服务器能够通过代理中转的方式去访问外网，从而让这些`ai agent`正常工作。
+# Remote Proxy Setting
 
-文档目标：让remote server通过本机 Mac 的飞连 VPN 系统路由 出口访问vpn网络。
-## 一键配置
-直接将本文档发送给本机的`trae-cn`的`@SOLO Coder`，或者`codex`，`claude code`等等AI agent，让它们帮你搞定!
+## 目标
+本文档用于让 remote server 通过本机 Mac 的 VPN 系统路由访问外网，从而让需要联网的 AI agent 正常工作。
 
-**特别注意**：如果使用`ai agent`的一键配置，则需要将`codex`, `claude code`开启`yolo`模式。`trae-cn`需要在settings内的conversation的Auto-Run模式全部开启。否则这些`agent`会启用`sandbox`模式，无法使用真实的网络环境！
+## 备注
+- 允许 AI agent 一键配置时，必须使用真实网络环境，不能走 sandbox。
+- 需要允许 agent 执行真实命令，否则无法完成网络代理配置。
+- 如果你已有自己的代理，也可以直接使用；本文档默认使用 Mac 上的飞连 VPN。
 
-另外：如果你拥有clash等等自己的代理，也可以选择使用自己的代理，不过飞连vpn不需要付费，所以建议使用飞连vpn。
-# 配置流程
-## 前置条件
-- Mac 已连接飞连 VPN，飞连vpn开启了全局模式，且 Mac 本机直连可访问：
-  - `curl --max-time 12 https://www.youtube.com` 成功。
-- remote server 以及配置好在`~/.ssh/config`内.
-## 1. Mac 启动临时 CONNECT 代理（仅走系统路由）
-在一个终端上执行以下命令，这个命令会启动一个简易的 HTTP 代理服务器（HTTP Proxy Server），监听端口为`18080`。用于转发服务器的CONNECT请求。
+## 前提
+- Mac 已连接飞连 VPN，且开启全局模式。
+- Mac 本机可直接访问外网，例如：
+```bash
+curl --max-time 12 https://www.youtube.com
+```
+- remote server 已配置在本地 `~/.ssh/config` 中。
+
+## 1. 在 Mac 上启动临时 CONNECT 代理
+在本机终端执行以下命令，监听 `127.0.0.1:18080`：
+
 ```bash
 PORT=18080
 python3 - <<'PY'
@@ -75,16 +78,25 @@ while True:
     threading.Thread(target=handle,args=(c,),daemon=True).start()
 PY
 ```
-验证本机代理可用（另开一个终端）：
+
+验证本机代理：
+
 ```bash
-curl -I --max-time 12 -x http://127.0.0.1:18080 https://www.youtube.com
+curl --max-time 12 -x http://127.0.0.1:18080 https://www.youtube.com
 ```
 
-## 2. 配置 remote server 上的反向代理
-你的 ssh config 配置了如下反代理规则：
-在`~/.ssh/config`内，添加如下内容：最重要的是`RemoteForward 18080 localhost:18080`，其他内容根据实际情况填写。
-假设我现在的服务器是`910c_1`，那么我需要添加如下内容，请根据你的实际情况填写：
+## 2. 配置 SSH config 中的 `RemoteForward`
+在本地 `~/.ssh/config` 中，为目标 remote server 添加或确认以下配置。
+
+关键项只有这一行：
+
+```text
+RemoteForward 18080 127.0.0.1:18080
 ```
+
+示例：
+
+```text
 Host 910c_1
     HostName 180.184.39.97
     User root
@@ -93,14 +105,23 @@ Host 910c_1
     RemoteForward 18080 127.0.0.1:18080
 ```
 
-## 3. 验收规则
-在 910c_1 上执行验收命令（另开一个终端）：
+## 3. 验收
+在 remote server 上执行：
+
 ```bash
 ssh 910c_1 "curl --max-time 12 -x http://127.0.0.1:18080 https://www.youtube.com"
 ```
 
-## 4. 使用代理
-如果返回成功，你就可以在服务器的终端使用`export all_proxy=http://127.0.0.1:18080` 来访问mac飞连的vpn网络。然后你的`ai agent`就可以正常工作了。
+返回成功即表示反向代理可用。
 
-## 5. 清理与退出(可选，只有当你不再需要访问飞连的vpn网络时才退出)
-用`ctrl+c`退出步骤 1 启动的简易 HTTP 代理服务器。
+## 4. 使用方式
+验收通过后，在服务器终端中执行：
+
+```bash
+export all_proxy=http://127.0.0.1:18080
+```
+
+之后 remote server 上的 AI agent 就可以通过 Mac 的 VPN 网络访问外网。
+
+## 5. 退出方式
+不再需要代理时，回到步骤 1 的本机终端，按 `Ctrl+C` 停止临时 CONNECT 代理。
