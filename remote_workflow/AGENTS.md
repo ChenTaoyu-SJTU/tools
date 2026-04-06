@@ -6,8 +6,8 @@
 - 默认工作目录：远程 `Host` 上的 `/data01/cty`
 
 ## 执行硬规则
-1. 执行任务前，先收集本地 `tools`、远程 `agents_tools` 和目标机器当前状态，再给出计划，不要直接开始执行。
-2. 涉及远程操作时，优先查看远程 `/data01/cty/agents_tools` 下的说明，再执行具体动作。
+1. 执行任务前，先收集本地 `tools`、远程 `agents_tools` 和目标机器的相关信息，再给出计划，不要直接开始执行。
+2. 涉及远程操作时，优先查看远程服务器上 `/data01/cty/agents_tools` 下的说明，再执行具体动作。
 3. 涉及文件同步时，先明确这是“全新传输”还是“更新覆盖”。
 4. 更新已有文件或目录时，先处理重名冲突；需要时先删除旧内容，再覆盖新内容。
 5. 收尾时提供简洁总结，说明执行结果、验证结果和后续注意事项。
@@ -57,7 +57,10 @@
 - 最稳妥路径是：本地文件 -> 远程 `/data01/cty/Downloads` 中转 -> `docker exec` 或 `docker cp` 覆盖 container 内 `/root/.codex/auth.json` -> SHA-256 校验。
 
 ## 示例任务
-### 拉起 vLLM PD 分离服务
+### 镜像下载工作流
+位于`tools/remote_workflow/images_related.md`
+
+### 拉起 vLLM PD 分离服务工作流
 准备阶段重点检查：
 
 1. 先用 `pkill VLLM` 清理机器上的旧服务。
@@ -72,6 +75,12 @@
 - `run_dp_template.sh` 中 Prefill 与 Decode 节点的 `--additional-config` 不同。
 - Prefill 节点使用 eager 模式，Decode 节点使用 cuda graph 模式。
 
+### 下载模型权重
+准备：先检查权重是否已经下载过了，下载的目录在`~/.cache/modelscope/hub/models/Qwen/Qwen3.5-0.8B`。
+1. 使用本地 Mac 上的 `modelscope` 下载模型权重：`modelscope download --model Qwen/Qwen3.5-0.8B`。
+2. 将下载的模型权重上传到对象存储 `volces-tos` 中。 
+3. 在服务器上从对象存储下载模型权重到`/data01/cty/Downloads`目录。
+4. 验收模型权重是否下载成功。
 ## 常用任务提示词
 ### 初始化各服务器的 Docker container 环境
 根据位于 `/Users/bytedance/gitspace/tools/remote_workflow/utils.md` 中的初始化规则，结合远程服务器的 `agents_tools` 配置，为四台远程服务器执行 Docker container 环境初始化，并在完成后提供每台机器的状态、配置详情和验证结果。
@@ -83,5 +92,6 @@
 1. SSH 沙箱环境下权限失败
    - 沙箱环境可能无法解析跳板机域名，也无法使用真实网络。执行远程任务时不要使用 sandbox。
 2. 在跳板机 `jumpecs-lf.byted.org` 阶段出现 `Permission denied (gssapi-with-mic)`
+   - 首先尝试新开一个`terminal`进行`ssh`尝试重连，如果仍然失败则提醒用户执行 `kinit`.
    - 提醒用户执行 `kinit chentaoyu.0@BYTEDANCE.COM`。
-   - 用户确认完成后，重新开启一个真实终端环境再继续执行。
+   - 用户确认完成后，会重新开启一个真实终端环境再继续执行。

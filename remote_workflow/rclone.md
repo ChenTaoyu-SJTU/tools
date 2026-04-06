@@ -3,7 +3,7 @@
 ## 默认路径
 - 默认对象存储中转目录：`volces-tos:yupeng-dev-hb2/chentaoyu`
 - 推荐镜像目录：`volces-tos:yupeng-dev-hb2/chentaoyu/images`
-- 默认下载服务器别名：`ark-910c-2-huabei2`
+- 默认下载服务器别名：`910c_2`
 - 服务器默认下载目录：`/data01/cty/Downloads`
 
 ## 从本地上传到对象存储
@@ -24,7 +24,7 @@ rclone copy -P --transfers=32 --checkers=32 volces-tos:yupeng-dev-hb2/chentaoyu/
 用于清理对象存储上的单个文件：
 
 ```bash
-rclone delete volces-tos:yupeng-dev-hb2/hefei/file.txt
+rclone delete volces-tos:yupeng-dev-hb2/chentaoyu/file.txt
 ```
 
 ## 创建镜像目录
