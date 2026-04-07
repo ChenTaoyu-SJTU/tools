@@ -255,6 +255,219 @@ executor 选择逻辑在 `vllm/v1/executor/abstract.py::Executor.get_class()`：
 - 常规 `mp` 是先按单个 DP 副本建 world，再在 `init_distributed_environment()` 里扩到全局
 - `external_launcher` 更接近“外部已经把全局 world 摆好了”
 
+## `ExternalDP` 注释到底是什么意思
+
+`vllm/distributed/parallel_state.py` 里有一段很容易让人误解的注释：
+
+- `the layout order is: ExternalDP x DP x PP x TP`
+- `ExternalDP is the data parallel group that is not part of the model`
+- `DP is the data parallel group that is part of the model`
+
+先说结论：
+
+- `ExternalDP` 是 `parallel_state.py` 注释里的拓扑抽象，和 `vllm serve` 在线服务里的 external LB 模式不是一回事。
+- 这里的 `ExternalDP` 更像 rank 布局里“最外层保留维度”的概念，不是当前常规 `vllm serve` 路径下一定会显式初始化出来的 process group。
+- 对大多数在线服务来说，运行时通常可以近似理解为 `ExternalDP = 1`；真正起作用的是 `DP / PP / PCP / TP / EP`。
+- `DeepSeek-V3.2.md` 里要分开看两段部署：`Multi-node Deployment` 不是 `--data-parallel-rank` 路线，`Prefill-Decode Disaggregation` 才是。
+- 即便在 PD 分离那段里最终传了 `--data-parallel-rank`，也只能说明 `serve` 服务层走了 external LB 路线；这不等于 `parallel_state.py` 里一定存在 `ExternalDP > 1`，也不等于这些 rank 在模型执行语义上属于 `ExternalDP`。
+
+### 0. 先把两个 `external` 术语拆开
+
+- `ExternalDP`：`parallel_state.py` 注释里的拓扑维度，语义是“模型外独立副本”。
+- `external LB`：`vllm serve` 在线服务的负载均衡模式，语义是“请求由外部方式分发到不同实例/DP rank”。
+
+它们名字相似，但不是同一个机制，不能互相替代。
+
+### 1. 为什么说它是“保留维度”
+
+`initialize_model_parallel()` 里真正的 rank 布局代码是：
+
+- `all_ranks = torch.arange(world_size).reshape(-1, dp, pp, pcp, tp)`
+
+所以从真实代码看，更准确的布局其实是：
+
+- `ExternalDP x DP x PP x PCP x TP`
+
+其中：
+
+- 最前面的 `-1` 才是注释里说的 `ExternalDP`
+- `DP` 是模型内部的数据并行维度
+- `PP / PCP / TP` 是模型内部其他并行维度
+
+因此可以把它理解成：
+
+- `all_ranks[external_dp, dp, pp, pcp, tp] = global_rank`
+
+如果当前 world 只有一层模型内部 DP，而没有更外层独立副本，那么这个 `ExternalDP` 维度自然就是 `1`。
+
+### 2. 注释里“模型内 DP”和“模型外 DP”的区别
+
+- `ExternalDP`：不属于同一个模型内部协同执行单元的外层副本。不同副本可以各自独立 `generate()`。
+- `DP`：属于同一个模型内部协同执行单元的数据并行组。同一个 `DP group` 内的 rank 必须同步进入一次 `generate()` / forward。
+
+对 `DeepSeek-V3.2` 这类 `Attention DP + MoE EP` 的部署来说，实际发生的是第二种：
+
+- 同一个 `DP group` 内的 rank 要一起对齐 batch、一起进入 MoE 前后的通信链路
+- 因此它属于“模型内 DP”，不是“模型外独立副本”
+
+这也是注释里强调“同一个 DP group 的 rank 必须一起调用 `generate`，否则会 deadlock”的原因：组内会发生 collective 通信，只进一部分 rank 会卡死。
+
+### 3. `transpose + reshape + unbind` 在做什么
+
+这段注释真正想说明的是“如何按某个维度切 group”：
+
+1. 想按哪个维度建组，就先把那个维度转到最后
+2. 再 reshape 成二维
+3. 最后一维的每一行，就是该维度的一个 group
+
+例如：
+
+- `TP` 组本来就在最后一维，所以直接 `view(-1, tp_size)`
+- `DP` 组要先把 `DP` 维转到最后，再 `reshape(-1, dp_size)`
+
+因此这段注释描述的是：
+
+- 一套通用的 rank 张量切组规则
+
+而不是：
+
+- 当前部署一定同时存在一个额外的 `ExternalDP group`
+
+## `DeepSeek-V3.2` 的 Attention DP + MoE EP 是怎么通信的
+
+这个问题在 Ascend 路径下要分成两层看：
+
+- 控制面：DP rank 之间先同步 batch 元信息
+- 数据面：attention 结果如何送进 MoE，再如何从 MoE 回到各 DP rank
+
+### 1. 控制面：先用 DP `all_reduce` 对齐 batch 形状
+
+`vllm_ascend/worker/model_runner_v1.py` 在真正前向前，会先用 `get_dp_group().cpu_group` 做一次 `all_reduce`，同步：
+
+- 当前 rank 的 token 数
+- `with_prefill`
+- `cudagraph_mode`
+
+这样做的目的不是同步 attention 输出，而是：
+
+- 算出 `num_tokens_across_dp`
+- 取 `max_tokens_across_dp`
+- 让不同 DP rank 在 padding 之后 lockstep 地继续执行
+
+这一步对应：
+
+- `vllm_ascend/worker/model_runner_v1.py::_sync_metadata_across_dp()`
+- `vllm_ascend/worker/model_runner_v1.py::_sync_batch_across_dp()`
+
+### 2. 不开 SP 时，DP 组的数据面通信链路
+
+`vllm_ascend/ops/fused_moe/prepare_finalize.py` 已经把这条链路直接写出来了：
+
+- `Attn -> TP AR -> DP AG -> MoE -> DP RS -> TP AR`
+
+这里的含义是：
+
+- attention 先在各自 DP rank 上处理本地 token
+- 进入 MoE 前，把每个 DP rank 的 `hidden_states` 和 `router_logits` pad 到统一长度
+- 然后做 `DP all-gather`，形成跨 DP 的全局 token 视图
+- MoE 再按 EP 做专家分发
+- MoE 输出回来后，再做 `DP reduce-scatter`，把结果切回各个原始 DP rank
+
+对应实现是：
+
+- `vllm_ascend/ops/fused_moe/prepare_finalize.py::_prepare_with_dp_group()`
+- `vllm_ascend/ops/fused_moe/prepare_finalize.py::_finalize_with_dp_group()`
+
+所以在“Attention DP + MoE EP”里，DP group 的核心数据面职责是：
+
+- `DP all-gather` 把 token 聚起来送进 MoE
+- `DP reduce-scatter` 把 MoE 输出再分回各 DP rank
+
+### 3. 开了 FlashComm1 / SP 之后，会进一步折叠成 EP 通信
+
+在 Ascend 上，`enable_sp()` 主要由 `VLLM_ASCEND_ENABLE_FLASHCOMM1` 控制。
+
+对 `DeepSeek-V3.2` 常见的 A3 配置，这通常会进入 `prepare_finalize.py` 里另一条优化路径：
+
+- 理论展开：`TP AG -> Attn -> TP RS -> TP AG -> DP AG -> MoE -> DP RS -> TP RS`
+- 优化后：`TP AG -> Attn -> TP RS -> EP AG -> MoE -> EP RS`
+
+也就是说：
+
+- 逻辑上原本存在的 `DP AG / DP RS`
+- 会和 `TP AG / TP RS` 一起折叠进 `EP all-gather / EP reduce-scatter`
+
+对应实现是：
+
+- `vllm_ascend/ops/fused_moe/prepare_finalize.py::_prepare_with_ep_group()`
+- `vllm_ascend/ops/register_custom_ops.py::_maybe_all_gather_and_maybe_unpad_impl()`
+- `vllm_ascend/ops/register_custom_ops.py::_maybe_pad_and_reduce_impl()`
+
+这里虽然实际搬运数据时常常走 `EP` 组，但仍然依赖：
+
+- `forward_context.dp_metadata.num_tokens_across_dp_cpu`
+
+来记录“每个 DP rank 原来有多少 token”，以便做 pack / unpad / restore。
+
+### 4. 对 `DeepSeek-V3.2.md` 两段多机部署的准确理解
+
+`docs/source/tutorials/models/DeepSeek-V3.2.md` 里有两段不同的多机部署，不能混在一起理解。
+
+#### 4.1 `Multi-node Deployment`
+
+这段双机部署的关键参数是：
+
+- Node0 不传 `--data-parallel-rank`
+- Node1 传 `--headless --data-parallel-start-rank 1`
+
+它和 vLLM 的 multi-node internal LB / headless secondary node 测试形态是一致的：
+
+- 前台节点负责 API server 和本地 engine
+- 次节点以 `headless` 方式承载从某个 DP rank 开始的一段 engine
+
+因此这段部署：
+
+- 不是 external LB
+- 也不是 hybrid LB
+
+原因是 `data_parallel_start_rank` 只有在 `not headless` 时才会被 `arg_utils.py` 推断成 hybrid LB；而这里的 Node1 明确传了 `--headless`。
+
+对模型执行链路来说，这里的 DP 仍然是：
+
+- 会通信的模型内 DP
+- 即 `Attention DP + MoE EP` 里真正参与 batch 对齐、MoE 前后 token 聚合/回分发的那个 DP
+
+所以这段 `Multi-node Deployment` 不属于 `ExternalDP`。
+
+#### 4.2 `Prefill-Decode Disaggregation`
+
+这一段先定义了 `launch_online_dp.py`，其中有一个脚本参数：
+
+- `--dp-rank-start`
+
+这里要特别注意，它是 launcher 自己的参数，不是 `vllm serve --data-parallel-start-rank`。
+
+launcher 的逻辑是：
+
+- 先用 `dp_rank = dp_rank_start + i` 算出每个实例的 DP rank
+- 再在 `run_dp_template.sh` 里把这个 rank 作为 `--data-parallel-rank` 传给 `vllm serve`
+
+因此 PD 分离这段在服务层面的准确理解是：
+
+- 每个 `vllm serve` 实例都有明确的 `data_parallel_rank`
+- `serve` 会把这类实例归到 external LB 路线
+
+但这仍然不等于：
+
+- 运行时存在一个额外展开的 `ExternalDP` 维度
+- 或者这些 rank 在模型执行语义上属于 `ExternalDP`
+
+更准确的结论是：
+
+- PD 分离用了 `--data-parallel-rank`，所以服务层进入了 external LB 路线
+- 但模型执行语义上真正起作用的仍然是内部通信的 `DP + TP + EP`
+- `ExternalDP` 在这条路径里通常仍然只是 `parallel_state.py` 里的最外层保留维度，常可近似理解为 `1`
+
 ## 易混淆点
 
 - `worker.rank` 不是最终 torch WORLD rank；DP 场景下它只是进入 `init_distributed_environment()` 前的局部 rank。
@@ -262,3 +475,9 @@ executor 选择逻辑在 `vllm/v1/executor/abstract.py::Executor.get_class()`：
 - 多机部署不一定需要 `--nnodes`；很多在线服务教程走的是“多机 DP + headless”的另一条路径。
 - dense 模型的多 DP 在线服务，更接近多个独立副本；MoE 才会真正把 DP 纳入 vLLM 内部并行语义。
 - “创建 worker”与“初始化并行组”是两层逻辑：前者发生在 executor，后者发生在 `parallel_state.py`。
+- `ExternalDP` 在当前代码里更像 rank 布局的最外层抽象维度，不要把它自动等同成一个已经显式初始化出来的并行组。
+- 不要因为名字里都带 `external`，就把 `ExternalDP` 和 `external LB` 视为同一个概念；前者是拓扑维度，后者是在线服务模式。
+- `--data-parallel-rank` 只能说明实例的 DP 身份，并且在 `vllm serve` 中会触发 external LB 模式；不能直接推出“这些 rank 属于 `ExternalDP`”。
+- 不要把 `launch_online_dp.py --dp-rank-start` 和 `vllm serve --data-parallel-start-rank` 视为同一个参数；前者是 launcher 参数，后者才是 `serve` 自己识别的 CLI 参数。
+- `DeepSeek-V3.2.md` 里的 `Multi-node Deployment` 和 `Prefill-Decode Disaggregation` 是两段不同的部署形态；前者不是 external LB，后者才是 `--data-parallel-rank` 路线。
+- 在 `DeepSeek-V3.2` 的 Attention DP + MoE EP 场景里，DP group 主要负责 batch 对齐以及 MoE 前后的 token 聚合/回分发；真正的专家路由通信由 EP 负责。
