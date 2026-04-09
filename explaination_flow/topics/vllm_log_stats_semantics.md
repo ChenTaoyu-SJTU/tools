@@ -1,3 +1,7 @@
+---
+tags: [log, stats, throughput, metrics, prompt-throughput, generation-throughput, cache-hit-rate, spec-decode-metrics, VLLM_LOG_STATS_INTERVAL]
+---
+
 # vLLM Log Stats Semantics
 
 ## 结论

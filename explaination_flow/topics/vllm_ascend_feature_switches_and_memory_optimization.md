@@ -1,3 +1,7 @@
+---
+tags: [HCCL_BUFFSIZE, FUSED_MC2, layer_sharding, MoE, memory, DeepSeek-V3, W8A8, FlashComm2, tiling, o_proj, q_b_proj]
+---
+
 # vLLM-Ascend 特性开关与显存优化总览
 
 ## 结论速览

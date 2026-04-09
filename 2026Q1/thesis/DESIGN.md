@@ -2,7 +2,7 @@
 任务目标是完成一个调度器，借鉴tomasulo算法，来优化vllm在npu芯片上的性能。
 
 # Baseline
-该项目的 baseline 是 vllm 的原生调度器，使用 async scheduler, model_runner_v2 这两个功能。
+该项目的 baseline 是 vllm 的原生调度器, 使用 async scheduler, model_runner v1。
 
 # algorithm
 

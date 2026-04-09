@@ -1,3 +1,7 @@
+---
+tags: [prepare_inputs, attention-metadata, token-positions, slot-mapping, block-table, input_ids, prefill, chunked-prefill, model_runner_v1]
+---
+
 model_runner_v1架构
 整体概念
 执行模型前向传播所需信息：

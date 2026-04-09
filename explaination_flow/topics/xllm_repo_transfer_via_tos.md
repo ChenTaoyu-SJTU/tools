@@ -1,3 +1,7 @@
+---
+tags: [xLLM, rclone, TOS, transfer, tar, sha256, migration, remote, pigz]
+---
+
 # xLLM 仓库通过对象存储中转（rclone）迁移
 
 ## 适用场景

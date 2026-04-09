@@ -74,8 +74,16 @@ Git
     ```
     
 - check the configuration:
-    
-    `git config --list` 
+    ```bash
+    # global configuration
+    git config --global--list
+
+    # local configuration for a individual repository
+    git config --local --list
+
+    git config --local user.name "ChenTaoyu-SJTU"
+    git config --local user.email "ctynb@qq.com"
+    ```
     
 - set github ssh private key
     
@@ -107,7 +115,7 @@ git clone https://github.com/vllm-project/vllm.git
 ```
 
 - Set remote URL
-    - Add remote:
+- Add remote:
     
     ```bash
     # Add remote url:
@@ -119,7 +127,7 @@ git clone https://github.com/vllm-project/vllm.git
     # Remote remote url:
     git remote remove upstream
     ```
-    
+
 - Checkout to an existing branch from a remote repository
     
     ```bash

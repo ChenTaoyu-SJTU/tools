@@ -1,3 +1,7 @@
+---
+tags: [profile_run, dummy_run, ACLGraph, graph-capture, DP-padding, cudagraph_capture_sizes, FlashComm1, num_tokens_across_dp, CUDAGraph, ROCm]
+---
+
 # vLLM-Ascend runtime、ACLGraph 与 DP padding 总览
 
 ## 结论速览

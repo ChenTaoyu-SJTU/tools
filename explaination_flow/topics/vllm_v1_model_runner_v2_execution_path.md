@@ -1,3 +1,7 @@
+---
+tags: [v2-runner, execute_model, prepare_inputs, sample, async-scheduling, CUDA-graph, InputBatch, chunked-prefill, spec-decode, RequestState]
+---
+
 # vLLM V1 GPU ModelRunner V2 Execution Path
 
 ## 结论速览

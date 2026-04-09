@@ -1,3 +1,7 @@
+---
+tags: [distributed, DP, TP, EP, PP, PCP, rank, world_size, parallel_state, MoE, ExternalDP, headless, multi-node]
+---
+
 # vLLM 分布式 DP/TP/EP 拓扑、rank 与初始化总览
 
 ## 结论速览

@@ -1,3 +1,7 @@
+---
+tags: [xLLM, vLLMModelRunner, profiling, Ascend_Profiling, launcher, DP, enable_attention_dp, NPUModelRunner, inputs_sharing, vanilla_vllm]
+---
+
 # xLLM、vLLM 与 vllm-ascend 的 runner 接线与 profiling 总览
 
 ## 结论速览
