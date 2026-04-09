@@ -160,6 +160,77 @@ Ascend 侧会在 `vllm_ascend/utils.py::update_aclgraph_sizes()` 中，根据：
 
 这更接近“执行形状需要这么大的 padded slots”，不代表真实请求条数真的变成了这个值。
 
+## CUDAGraphWrapper 与 ACLGraphWrapper 详细对比
+
+### 统一抽象接口
+
+两者不是独立的两套方案，而是同一套抽象接口 `AbstractStaticGraphWrapper`（`vllm/compilation/base_static_graph.py`）在不同硬件平台上的具体实现。平台切换通过 `current_platform.get_static_graph_wrapper_cls()` 完成：
+
+- GPU 返回 `vllm.compilation.cuda_graph.CUDAGraphWrapper`
+- Ascend 在 `vllm_ascend/platform.py` 返回 `vllm_ascend.compilation.acl_graph.ACLGraphWrapper`
+
+上游通用代码（如 `vllm/compilation/backends.py::wrap_with_cudagraph_if_needed`）通过此接口动态解析 wrapper 类，无硬编码。
+
+### 共享枚举
+
+两者共用 `CUDAGraphMode`（`vllm/config/compilation.py`），Ascend **没有** 独立的 `ACLGraphMode`。运行时模式字段名也是 `cudagraph_runtime_mode`。
+
+### Wrapper 实现逐项对比
+
+| 维度 | CUDAGraphWrapper (GPU) | ACLGraphWrapper (Ascend) |
+|------|----------------------|--------------------------|
+| 文件 | `vllm/compilation/cuda_graph.py` | `vllm_ascend/compilation/acl_graph.py` |
+| 图对象 | `torch.cuda.CUDAGraph()` | `torch.npu.NPUGraph()` |
+| 录制 API | `torch.cuda.graph(cg, pool=..., stream=...)` | `torch.npu.graph(ag, pool=...)` |
+| 回放 API | `entry.cudagraph.replay()` | `entry.aclgraph.replay()` |
+| Graph Pool | `get_global_graph_pool()` + `set_graph_pool_id()` | `get_global_graph_pool()`，不需要额外 `set_graph_pool_id` |
+| GC 抑制 | patch `gc.collect` + `torch.cuda.empty_cache` | patch `gc.collect` + `torch.npu.empty_cache` |
+| Entry 类型 | `CUDAGraphEntry`（`torch.cuda.CUDAGraph`） | `ACLGraphEntry`（`torch.npu.NPUGraph`） |
+| **replay 前同步** | **无** | `torch.npu.current_stream().synchronize()`（非 FULL+Eagle+draft 时） |
+| **额外资源管理** | **无** | `weak_ref_workspaces(_graph_params)` + `_draft_graph_params` |
+| 构造函数签名 | `(runnable, vllm_config, runtime_mode, cudagraph_options)` | 完全一致 |
+| 调度逻辑 | `forward_context.cudagraph_runtime_mode` 匹配 | 同上 |
+
+### 关键差异详解
+
+**1. Replay 前的流同步**
+
+ACLGraphWrapper 在 replay 前增加了 `torch.npu.current_stream().synchronize()`，确保 async scheduling 下前一轮 graph replay 完成后才能更新 attention 参数，避免数据竞争。GPU 侧直接 replay 不需要额外同步。
+
+**2. GraphParams：NPU 独有的注意力参数管理**
+
+`GraphParams` dataclass 包含 `events`、`workspaces`、`handles`、`attn_params` 四个按 batch_size 索引的字典。graph capture 后做 `weak_ref_workspaces()` 释放显存，FULL 模式 inference 阶段通过 `update_full_graph_params()` 更新下一轮的注意力参数。GPU 侧的 attention 参数在 graph 录制时通过 persistent buffer 和 forward context 内联处理。
+
+**3. `_model_forward` 后处理**
+
+NPU 的 `_model_forward` 在 FULL 非 capture 模式下额外调用 `update_full_graph_params()`，并在 FlashComm v1 启用时做 `_all_gather_hidden_states_and_aux()`。GPU 的 `_model_forward` 只是 `return self.model(...)`。
+
+**4. Forward Context 桥接**
+
+Ascend 的 `set_ascend_forward_context(aclgraph_runtime_mode=...)` 将参数映射为 `cudagraph_runtime_mode` 写入上游 `ForwardContext`，同时注入 MoE 通信方式、FlashComm、SP padding、MC2 mask 等 NPU 特有上下文。
+
+**5. Graph Capture Sizes 裁剪**
+
+Ascend 通过 `update_aclgraph_sizes()` 根据层数、并行因子、通信方式估算可 capture 的 shape 上限，超出时均匀采样子集并写回配置。GPU 侧一般不裁剪。
+
+### 工作流对比
+
+```
+GPU:  CompilationConfig.cudagraph_mode
+        → CudagraphDispatcher.dispatch()
+        → set_forward_context(cudagraph_runtime_mode=...)
+        → self.model (CUDAGraphWrapper)
+        → torch.cuda.CUDAGraph.replay()
+
+NPU:  CompilationConfig.cudagraph_mode (共享)
+        → CudagraphDispatcher.dispatch() (共享)
+        → set_ascend_forward_context(aclgraph_runtime_mode=...)  ← 桥接
+        → self.model (ACLGraphWrapper)
+        → torch.npu.current_stream().synchronize()              ← 额外同步
+        → torch.npu.NPUGraph.replay()
+        → update_full_graph_params()                             ← 额外参数更新
+```
+
 ## GPU CUDAGraph、Ascend ACLGraph、ROCm 的边界
 
 ### 1. GPU
@@ -173,6 +244,8 @@ Ascend V1 runner 走 `vllm_ascend/compilation/acl_graph.py` 的 `ACLGraphWrapper
 - shape 裁剪
 - DP shape 协调
 - MoE / MC2 / FlashComm1
+- GraphParams 注意力参数管理
+- replay 前流同步
 
 形成一条 NPU 特化路径。
 
@@ -194,12 +267,17 @@ ROCm 在 `vllm/platforms/rocm.py` 里仍然返回 `vllm.compilation.cuda_graph.C
 - `cudagraph_capture_sizes` 来自 compilation config
 - cudagraph batch sizes 会在 runner 内部排序保存
 - 多种平台都会先决定 runtime mode，再进入具体 graph wrapper
+- `CUDAGraphMode` 枚举和 `CudagraphDispatcher` 调度器跨平台共享
+- `BatchDescriptor` 作为 graph cache key 跨平台通用
 
 ### Ascend 特化行为
 
 - `NPUModelRunner.profile_run()` 会做 EPLB / MC2 / PCP 相关额外处理
 - `ACLGraphWrapper` 与 `_graph_params` / `_draft_graph_params` 是 Ascend 独有的 ACLGraph 运行时机制
+- replay 前需要额外的流同步（async scheduling 安全性）
+- `_model_forward` 后需要 `update_full_graph_params()` 更新注意力参数
 - DP padding 与 FlashComm1、MoE 通信方式、ACLGraph shape 裁剪之间耦合更紧
+- `set_ascend_forward_context` 作为桥接层注入大量 NPU 特有上下文
 
 ## 易混淆点
 

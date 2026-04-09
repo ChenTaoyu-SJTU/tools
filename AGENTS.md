@@ -1,15 +1,30 @@
 # AGENTS.md
 
+## 关于git仓库设置
+如果用户需要，请将`git local config`的配置设置为：
+```bash
+git config --local user.name "ChenTaoyu"
+git config --local user.email "ctynb@qq.com"
+```
+用户的`git global config`保持不变
+
 ## 关于工作流的准备工作
 你一定需要先收集好所有与当前问题的所有相关信息，越全面详细越好，这样才有利于后续的理解和执行。
 1. 相关信息包括但不限于：本地信息、远程信息、文档信息、代码信息等等。
 2. 一定不要使用sandbox来执行任务，一定要在真实环境中执行。因为sandbox总会触发一些奇怪的错误。
 
 ## 在远程服务器上执行任务的硬规则
-请你在执行和服务器相关的任务时，遵循`/Users/bytedance/gitspace/tools/remote_workflow/AGENTS.md`中的规则。
+请你在执行和服务器相关的任务时，遵循`tools/remote_workflow/AGENTS.md`中的规则。
 
 ## 在解释与回答时的硬规则
-在用户提问时，请你遵循`/Users/bytedance/gitspace/tools/explaination_flow/AGENTS.md`中的规则。
+在用户提问时，请你遵循`tools/explaination_flow/AGENTS.md`中的规则。
+
+## 关于工作和学业的规则
+请遵守`tools/2026Q1/AGENTS.md`中的规则。
+
+## 关于文件改动的规则
+1. 在修改代码或文档前，首先使用`git add .`和`git commit -sm "message"`来提交当前修改。
+2. 在涉及到修改代码或文档的时候，如果用户提及使用`git worktree`来管理，则使用`git worktree`来管理。如果用户没有提及，则可询问用户是否要使用`git worktree`在新的分支上进行修改，如果用户认为改动量较小，则用户可以选择直接在当前分支上进行修改。
 
 ## 关于错误的规则：该规则为最高优先级，利于避免同样的错误再次发生。
 1. 首先你必须先阅读**常见错误**，无论它们出现在哪个文档中。
